@@ -173,10 +173,26 @@ static void powerSourceChangedCallback(void *context) {
         self.liveWatts = (float)(voltage * amperage) / 1000000.0f;
         self.cycleCount = [bDict[@"CycleCount"] intValue];
 
-        int designCap = [bDict[@"DesignCapacity"] intValue];
-        int nominalCap = [bDict[@"NominalChargeCapacity"] intValue];
-        if (designCap > 0 && nominalCap > 0) {
-            self.healthPercent = ((float)nominalCap / (float)designCap) * 100.0f;
+        int designCap = 0;
+        int actualCap = 0;
+        NSDictionary *bData = [bDict[@"BatteryData"] isKindOfClass:[NSDictionary class]] ? bDict[@"BatteryData"] : nil;
+        if (bData) {
+            designCap = [bData[@"DesignCapacity"] intValue];
+            actualCap = [bData[@"NominalChargeCapacity"] intValue];
+            if (actualCap <= 0) {
+                actualCap = [bData[@"FullChargeCapacity"] intValue];
+            }
+        }
+        if (designCap <= 0) {
+            designCap = [bDict[@"DesignCapacity"] intValue];
+        }
+        if (actualCap <= 0) {
+            actualCap = [bDict[@"AppleRawMaxCapacity"] intValue];
+        }
+
+        if (designCap > 0 && actualCap > 0) {
+            self.healthPercent = ((float)actualCap / (float)designCap) * 100.0f;
+            if (self.healthPercent > 100.0f) self.healthPercent = 100.0f;
         } else {
             self.healthPercent = 100.0f;
         }
