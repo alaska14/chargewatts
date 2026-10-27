@@ -46,6 +46,34 @@ static void powerSourceChangedCallback(void *context) {
     self.isHovered = NO;
     self.isPlugInFlashActive = NO;
 
+    // 1. Ensure position 400 (exact slot between Bluetooth at 543 and Wi-Fi at 362) is registered
+    // in both app domain and Control Center BEFORE the status item is created.
+    NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+    [defs registerDefaults:@{
+        @"NSStatusItem Preferred Position Battery": @(400),
+        @"NSStatusItem Preferred Position ChargeWatts": @(400)
+    }];
+    if (![defs objectForKey:@"NSStatusItem Preferred Position Battery"]) {
+        [defs setInteger:400 forKey:@"NSStatusItem Preferred Position Battery"];
+    }
+    if (![defs objectForKey:@"NSStatusItem Preferred Position ChargeWatts"]) {
+        [defs setInteger:400 forKey:@"NSStatusItem Preferred Position ChargeWatts"];
+    }
+    [defs synchronize];
+
+    // Seed com.apple.controlcenter domain so macOS menu bar manager locks slot 400
+    CFPreferencesSetValue(CFSTR("NSStatusItem Preferred Position Battery"),
+                          (__bridge CFNumberRef)@(400),
+                          CFSTR("com.apple.controlcenter"),
+                          kCFPreferencesCurrentUser,
+                          kCFPreferencesAnyHost);
+    CFPreferencesSetValue(CFSTR("NSStatusItem Preferred Position ChargeWatts"),
+                          (__bridge CFNumberRef)@(400),
+                          CFSTR("com.apple.controlcenter"),
+                          kCFPreferencesCurrentUser,
+                          kCFPreferencesAnyHost);
+    CFPreferencesSynchronize(CFSTR("com.apple.controlcenter"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+
     // Create Status Item with exact Apple Battery autosaveName & drag behavior
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:29.0];
     self.statusItem.autosaveName = @"Battery";
@@ -55,11 +83,6 @@ static void powerSourceChangedCallback(void *context) {
     self.statusItem.button.title = @"";
     self.statusItem.button.imagePosition = NSImageOnly;
     [self.statusItem.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
-
-    // Register preferred position 400 (exact slot between Bluetooth at 543 and Wi-Fi at 362)
-    [[NSUserDefaults standardUserDefaults] registerDefaults:@{
-        @"NSStatusItem Preferred Position Battery": @(400)
-    }];
 
     // Register IOKit Event Notification (0.0% CPU, Event-Driven)
     CFRunLoopSourceRef loopSource = IOPSNotificationCreateRunLoopSource(powerSourceChangedCallback, (__bridge void *)self);
