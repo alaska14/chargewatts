@@ -5,7 +5,7 @@
     <key>CFBundleExecutable</key>
     <string>ChargeWatts</string>
     <key>CFBundleIdentifier</key>
-    <string>com.modolabs.chargewatts</string>
+    <string>com.monolab.chargewatts</string>
     <key>CFBundleName</key>
     <string>ChargeWatts</string>
     <key>CFBundleDisplayName</key>

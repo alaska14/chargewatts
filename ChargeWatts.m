@@ -461,8 +461,8 @@ static void powerSourceChangedCallback(void *context) {
 
 - (void)showAbout {
     NSAlert *about = [[NSAlert alloc] init];
-    about.messageText = @"ChargeWatts 1.2";
-    about.informativeText = @"Stock-matching native battery icon with live wattage on plug-in & hover, adapter telemetry, and health monitoring.\n\nCrafted with native AppKit for 0.0% CPU overhead.";
+    about.messageText = @"ChargeWatts 1.2 by MonoLab";
+    about.informativeText = @"Stock-matching native battery icon with live wattage on plug-in & hover, adapter telemetry, and true hardware health.\n\nCrafted by MonoLab for 0.0% CPU overhead.";
     [about addButtonWithTitle:@"OK"];
     [NSApp activateIgnoringOtherApps:YES];
     [about runModal];
