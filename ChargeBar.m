@@ -363,55 +363,50 @@ static void powerSourceChangedCallback(void *context) {
     NSMenu *menu = [[NSMenu alloc] init];
     menu.autoenablesItems = NO;
 
-    // 1. Power Header
-    NSString *powerStr;
+    // 1. Primary Status Header (Clean typography, monochrome B&W)
+    NSString *headerTitle;
     if (self.isConnected) {
         int w = self.adapterWatts > 0 ? self.adapterWatts : (int)roundf(self.liveWatts);
-        powerStr = [NSString stringWithFormat:@"⚡ Connected: %dW (%@)", w, self.adapterName];
+        if (w > 0) {
+            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %dW Charging", self.capacity, w];
+        } else {
+            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · Connected", self.capacity];
+        }
     } else {
-        powerStr = @"🔋 Power Source: Battery Power";
+        int drawW = (int)roundf(fabsf(self.liveWatts));
+        if (drawW > 0) {
+            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %dW Draw", self.capacity, drawW];
+        } else {
+            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · On Battery", self.capacity];
+        }
     }
-    NSMenuItem *headerItem = [[NSMenuItem alloc] initWithTitle:powerStr action:nil keyEquivalent:@""];
+    NSMenuItem *headerItem = [[NSMenuItem alloc] initWithTitle:headerTitle action:nil keyEquivalent:@""];
     headerItem.enabled = NO;
+    NSImage *headerIcon = [NSImage imageWithSystemSymbolName:(self.isConnected ? @"bolt.fill" : @"battery.100") accessibilityDescription:nil];
+    if (headerIcon) {
+        [headerIcon setTemplate:YES];
+        headerItem.image = headerIcon;
+    }
     [menu addItem:headerItem];
 
-    // 2. Battery Percentage
-    NSString *statusStr = [NSString stringWithFormat:@"   Battery Level: %d%%", self.capacity];
-    NSMenuItem *statusItem = [[NSMenuItem alloc] initWithTitle:statusStr action:nil keyEquivalent:@""];
-    statusItem.enabled = NO;
-    [menu addItem:statusItem];
-
-    // 3. Live Power Flow
-    NSString *flowStr;
-    if (self.liveWatts > 0.05f) {
-        flowStr = [NSString stringWithFormat:@"   Net Flow: +%.1f W (Into battery)", self.liveWatts];
-    } else if (self.liveWatts < -0.05f) {
-        flowStr = [NSString stringWithFormat:@"   Net Flow: %.1f W (System draw)", self.liveWatts];
-    } else {
-        flowStr = @"   Net Flow: 0.0 W (Idle / Wall Power)";
-    }
-    NSMenuItem *flowItem = [[NSMenuItem alloc] initWithTitle:flowStr action:nil keyEquivalent:@""];
-    flowItem.enabled = NO;
-    [menu addItem:flowItem];
-
-    // 4. Health & Cycles
-    NSString *healthStr = [NSString stringWithFormat:@"   Health: %.1f%%  ·  %d Cycles", self.healthPercent, self.cycleCount];
-    NSMenuItem *healthItem = [[NSMenuItem alloc] initWithTitle:healthStr action:nil keyEquivalent:@""];
+    // 2. Battery Health & Cycles
+    NSString *healthTitle = [NSString stringWithFormat:@"Health: %.0f%% (%d cycles)", self.healthPercent, self.cycleCount];
+    NSMenuItem *healthItem = [[NSMenuItem alloc] initWithTitle:healthTitle action:nil keyEquivalent:@""];
     healthItem.enabled = NO;
     [menu addItem:healthItem];
 
-    // 5. Time Remaining
+    // 3. Time Remaining (if available)
     if (self.isCharging && self.timeToFull > 0 && self.timeToFull < 1000) {
         int h = self.timeToFull / 60;
         int m = self.timeToFull % 60;
-        NSString *timeStr = [NSString stringWithFormat:@"   Time to Full: %dh %02dm", h, m];
+        NSString *timeStr = (h > 0) ? [NSString stringWithFormat:@"Full in %dh %02dm", h, m] : [NSString stringWithFormat:@"Full in %d min", m];
         NSMenuItem *tItem = [[NSMenuItem alloc] initWithTitle:timeStr action:nil keyEquivalent:@""];
         tItem.enabled = NO;
         [menu addItem:tItem];
     } else if (!self.isConnected && self.timeToEmpty > 0 && self.timeToEmpty < 10000) {
         int h = self.timeToEmpty / 60;
         int m = self.timeToEmpty % 60;
-        NSString *timeStr = [NSString stringWithFormat:@"   Time Remaining: %dh %02dm", h, m];
+        NSString *timeStr = [NSString stringWithFormat:@"Time remaining: %dh %02dm", h, m];
         NSMenuItem *tItem = [[NSMenuItem alloc] initWithTitle:timeStr action:nil keyEquivalent:@""];
         tItem.enabled = NO;
         [menu addItem:tItem];
@@ -419,16 +414,12 @@ static void powerSourceChangedCallback(void *context) {
 
     [menu addItem:[NSMenuItem separatorItem]];
 
-    // Action to Hide macOS Stock Battery Icon
-    NSMenuItem *hideStockItem = [[NSMenuItem alloc] initWithTitle:@"🎛 Open Control Center Settings (Hide Stock Battery)" action:@selector(openControlCenterSettings) keyEquivalent:@""];
+    // 4. Clean Actions
+    NSMenuItem *hideStockItem = [[NSMenuItem alloc] initWithTitle:@"Battery Settings..." action:@selector(openControlCenterSettings) keyEquivalent:@""];
     hideStockItem.target = self;
     [menu addItem:hideStockItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
-
-    NSMenuItem *feedbackItem = [[NSMenuItem alloc] initWithTitle:@"💬 Send Feedback / Feature Request..." action:@selector(openFeedback) keyEquivalent:@""];
-    feedbackItem.target = self;
-    [menu addItem:feedbackItem];
 
     NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:@"About ChargeBar" action:@selector(showAbout) keyEquivalent:@""];
     aboutItem.target = self;
