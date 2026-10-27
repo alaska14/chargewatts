@@ -325,9 +325,9 @@ static void powerSourceChangedCallback(void *context) {
 
     // Tooltip
     if (self.isConnected) {
-        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeBar: %d%% · %dW (%@)", self.capacity, watts, self.adapterName];
+        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %dW (%@)", self.capacity, watts, self.adapterName];
     } else {
-        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeBar: %d%% · %dW (Discharging)", self.capacity, watts];
+        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %dW (Discharging)", self.capacity, watts];
     }
 }
 
@@ -437,11 +437,11 @@ static void powerSourceChangedCallback(void *context) {
 
     [menu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:@"About ChargeBar" action:@selector(showAbout) keyEquivalent:@""];
+    NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:@"About ChargeWatts" action:@selector(showAbout) keyEquivalent:@""];
     aboutItem.target = self;
     [menu addItem:aboutItem];
 
-    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit ChargeBar" action:@selector(quitApp) keyEquivalent:@"q"];
+    NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit ChargeWatts" action:@selector(quitApp) keyEquivalent:@"q"];
     quitItem.target = self;
     [menu addItem:quitItem];
 
@@ -456,12 +456,12 @@ static void powerSourceChangedCallback(void *context) {
 }
 
 - (void)openFeedback {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/alaska14/chargebar/issues"]];
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/alaska14/chargewatts/issues"]];
 }
 
 - (void)showAbout {
     NSAlert *about = [[NSAlert alloc] init];
-    about.messageText = @"ChargeBar 1.1";
+    about.messageText = @"ChargeWatts 1.2";
     about.informativeText = @"Stock-matching native battery icon with live wattage on plug-in & hover, adapter telemetry, and health monitoring.\n\nCrafted with native AppKit for 0.0% CPU overhead.";
     [about addButtonWithTitle:@"OK"];
     [NSApp activateIgnoringOtherApps:YES];
