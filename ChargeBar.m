@@ -7,12 +7,13 @@ extern CFDictionaryRef IOPSCopyExternalPowerAdapterDetails(void);
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property (strong, nonatomic) NSStatusItem *statusItem;
-@property (strong, nonatomic) NSTimer *chargingLiveTimer;
+@property (strong, nonatomic) NSTrackingArea *trackingArea;
 
-// Power Telemetry
+// Telemetry
 @property (assign, nonatomic) int capacity;
 @property (assign, nonatomic) BOOL isCharging;
 @property (assign, nonatomic) BOOL isConnected;
+@property (assign, nonatomic) BOOL previousConnected;
 @property (assign, nonatomic) int adapterWatts;
 @property (strong, nonatomic) NSString *adapterName;
 @property (assign, nonatomic) float liveWatts;
@@ -21,16 +22,15 @@ extern CFDictionaryRef IOPSCopyExternalPowerAdapterDetails(void);
 @property (assign, nonatomic) int timeToFull;
 @property (assign, nonatomic) int timeToEmpty;
 
-// User Preferences
-@property (assign, nonatomic) BOOL showWattage;
-@property (assign, nonatomic) BOOL showPercentage;
-@property (assign, nonatomic) BOOL showIcon;
-@property (assign, nonatomic) BOOL showLiveFlow; // Live wattage vs rated adapter wattage
+// Interactive State
+@property (assign, nonatomic) BOOL isHovered;
+@property (assign, nonatomic) BOOL isPlugInFlashActive;
+@property (strong, nonatomic) NSTimer *liveRefreshTimer;
 
 - (void)updateTelemetryAndUI;
 @end
 
-static void powerSourceNotificationCallback(void *context) {
+static void powerSourceChangedCallback(void *context) {
     AppDelegate *delegate = (__bridge AppDelegate *)context;
     dispatch_async(dispatch_get_main_queue(), ^{
         [delegate updateTelemetryAndUI];
@@ -40,29 +40,53 @@ static void powerSourceNotificationCallback(void *context) {
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-    // Default preferences
-    self.showWattage = YES;
-    self.showPercentage = YES;
-    self.showIcon = YES;
-    self.showLiveFlow = NO;
+    self.previousConnected = NO;
+    self.isHovered = NO;
+    self.isPlugInFlashActive = NO;
 
-    // Create status bar item
-    self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSVariableStatusItemLength];
+    // Create Status Item (Fixed length 32pt matching stock battery)
+    self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:34.0];
     self.statusItem.button.target = self;
     self.statusItem.button.action = @selector(statusItemClicked:);
+    self.statusItem.button.title = @"";
+    self.statusItem.button.imagePosition = NSImageOnly;
     [self.statusItem.button sendActionOn:(NSEventMaskLeftMouseUp | NSEventMaskRightMouseUp)];
 
     // Register IOKit Event Notification (0.0% CPU, Event-Driven)
-    CFRunLoopSourceRef loopSource = IOPSNotificationCreateRunLoopSource(powerSourceNotificationCallback, (__bridge void *)self);
+    CFRunLoopSourceRef loopSource = IOPSNotificationCreateRunLoopSource(powerSourceChangedCallback, (__bridge void *)self);
     if (loopSource) {
         CFRunLoopAddSource(CFRunLoopGetCurrent(), loopSource, kCFRunLoopDefaultMode);
         CFRelease(loopSource);
     }
 
     [self updateTelemetryAndUI];
+    [self setupTrackingArea];
 }
 
-#pragma mark - Telemetry Extraction
+- (void)setupTrackingArea {
+    if (self.trackingArea) {
+        [self.statusItem.button removeTrackingArea:self.trackingArea];
+    }
+    self.trackingArea = [[NSTrackingArea alloc] initWithRect:self.statusItem.button.bounds
+                                                     options:(NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways | NSTrackingInVisibleRect)
+                                                       owner:self
+                                                    userInfo:nil];
+    [self.statusItem.button addTrackingArea:self.trackingArea];
+}
+
+#pragma mark - Mouse Hover Handling
+
+- (void)mouseEntered:(NSEvent *)event {
+    self.isHovered = YES;
+    [self updateIconOnly];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+    self.isHovered = NO;
+    [self updateIconOnly];
+}
+
+#pragma mark - Power Telemetry
 
 - (void)readTelemetry {
     // 1. IOPowerSources
@@ -82,7 +106,7 @@ static void powerSourceNotificationCallback(void *context) {
     if (psList) CFRelease(psList);
     if (psInfo) CFRelease(psInfo);
 
-    // 2. Adapter Details
+    // 2. Power Adapter Details
     CFDictionaryRef adapterDetails = IOPSCopyExternalPowerAdapterDetails();
     if (adapterDetails) {
         NSDictionary *aDict = (__bridge NSDictionary *)adapterDetails;
@@ -94,7 +118,7 @@ static void powerSourceNotificationCallback(void *context) {
         self.adapterName = @"On Battery";
     }
 
-    // 3. AppleSmartBattery (Live Voltage, Amperage, Cycle Count, Health)
+    // 3. AppleSmartBattery (Hardware sensors)
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"));
     if (service) {
         CFMutableDictionaryRef props = NULL;
@@ -119,76 +143,155 @@ static void powerSourceNotificationCallback(void *context) {
     }
 }
 
-#pragma mark - UI Updates
+#pragma mark - Constant Stock Battery Pill Rendering
 
-- (void)updateTelemetryAndUI {
-    [self readTelemetry];
+- (NSImage *)renderConstantBatteryPillWithText:(NSString *)text capacity:(int)capacity {
+    // Constant outer dimensions: 32x18 pt.
+    // The battery pill NEVER jumps or resizes when text changes!
+    CGFloat totalW = 32.0;
+    CGFloat totalH = 18.0;
 
-    // Manage live charging timer (only runs when charging, stops on battery for 0.0% CPU)
-    if (self.isConnected && (self.isCharging || self.adapterWatts > 0)) {
-        if (!self.chargingLiveTimer) {
-            self.chargingLiveTimer = [NSTimer scheduledTimerWithTimeInterval:3.0 target:self selector:@selector(updateTelemetryAndUI) userInfo:nil repeats:YES];
-        }
+    CGFloat bodyW = 28.0;
+    CGFloat bodyH = 13.0;
+    CGFloat nubW = 1.6;
+    CGFloat nubH = 4.6;
+    CGFloat nubGap = 1.0;
+    CGFloat radius = 3.8;
+
+    NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(totalW, totalH)];
+    [image lockFocus];
+    CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+
+    [[NSColor clearColor] set];
+    NSRectFill(NSMakeRect(0, 0, totalW, totalH));
+
+    NSRect bodyRect = NSMakeRect(0.5, (totalH - bodyH) / 2.0, bodyW, bodyH);
+
+    // 1. Background Pill Frame (translucent 32% like stock macOS)
+    NSBezierPath *framePath = [NSBezierPath bezierPathWithRoundedRect:bodyRect xRadius:radius yRadius:radius];
+    [[NSColor colorWithCalibratedWhite:0.0 alpha:0.32] set];
+    [framePath fill];
+
+    // 2. Battery Charge Fill (matches actual capacity fraction, constant regardless of text)
+    CGFloat fillFraction = MAX(0.04f, MIN(1.0f, capacity / 100.0f));
+    CGFloat fillW = bodyRect.size.width * fillFraction;
+    NSRect fillRect = NSMakeRect(bodyRect.origin.x, bodyRect.origin.y, fillW, bodyRect.size.height);
+
+    CGContextSaveGState(ctx);
+    [framePath addClip];
+    [[NSColor colorWithCalibratedWhite:0.0 alpha:1.0] set];
+    NSRectFill(fillRect);
+    CGContextRestoreGState(ctx);
+
+    // 3. Subtle Frame Stroke
+    framePath.lineWidth = 1.0;
+    [[NSColor colorWithCalibratedWhite:0.0 alpha:0.55] set];
+    [framePath stroke];
+
+    // 4. Right Terminal Nub
+    CGFloat nubX = NSMaxX(bodyRect) + nubGap;
+    CGFloat nubY = (totalH - nubH) / 2.0;
+    NSRect nubRect = NSMakeRect(nubX, nubY, nubW, nubH);
+    NSBezierPath *nubPath = [NSBezierPath bezierPathWithRoundedRect:nubRect xRadius:0.8 yRadius:0.8];
+    [[NSColor colorWithCalibratedWhite:0.0 alpha:0.55] set];
+    [nubPath fill];
+
+    // 5. Centered Cutout Text inside Battery Body
+    // Using 8.5pt Bold font to cleanly fit up to "140W"
+    NSDictionary *attr = @{
+        NSFontAttributeName: [NSFont systemFontOfSize:8.5 weight:NSFontWeightBold],
+        NSForegroundColorAttributeName: [NSColor whiteColor]
+    };
+    NSSize textSize = [text sizeWithAttributes:attr];
+
+    CGContextSaveGState(ctx);
+    CGContextSetBlendMode(ctx, kCGBlendModeClear);
+    NSPoint textPt = NSMakePoint(NSMidX(bodyRect) - textSize.width / 2.0, NSMidY(bodyRect) - textSize.height / 2.0 - 0.2);
+    [text drawAtPoint:textPt withAttributes:attr];
+    CGContextRestoreGState(ctx);
+
+    [image unlockFocus];
+    [image setTemplate:YES];
+    return image;
+}
+
+#pragma mark - State Logic & Display Updates
+
+- (void)updateIconOnly {
+    NSString *displayText;
+
+    int watts = self.adapterWatts;
+    if (watts <= 0 && self.liveWatts > 0.5f) {
+        watts = (int)roundf(self.liveWatts);
+    }
+    if (watts <= 0) {
+        watts = 60; // fallback if charger details are pending
+    }
+
+    // Exact User Rules:
+    // 1. When nothing is plugged in: totally stock percentage number (e.g. "98", no % sign).
+    // 2. When plugged in:
+    //    - Automatically show charging wattage followed by big 'W' (e.g. "67W") for 2.0 seconds.
+    //    - Then switch back to percentage number ("98").
+    //    - If mouse hovers over symbol while plugged in: change back to showing wattage ("67W").
+    //    - When mouse leaves: swiftly switch back to percentage ("98").
+    // 3. The battery sign NEVER changes or moves while numbers switch! Fill stays constant.
+    if (self.isConnected && (self.isPlugInFlashActive || self.isHovered)) {
+        displayText = [NSString stringWithFormat:@"%dW", watts];
     } else {
-        if (self.chargingLiveTimer) {
-            [self.chargingLiveTimer invalidate];
-            self.chargingLiveTimer = nil;
-        }
+        displayText = [NSString stringWithFormat:@"%d", self.capacity];
     }
 
-    // Determine Icon
-    NSImage *icon = nil;
-    if (self.showIcon) {
-        if (self.isConnected) {
-            icon = [NSImage imageWithSystemSymbolName:@"bolt.fill" accessibilityDescription:@"Charging"];
-        } else {
-            if (self.capacity >= 90) {
-                icon = [NSImage imageWithSystemSymbolName:@"battery.100" accessibilityDescription:@"Battery 100%"];
-            } else if (self.capacity >= 70) {
-                icon = [NSImage imageWithSystemSymbolName:@"battery.75" accessibilityDescription:@"Battery 75%"];
-            } else if (self.capacity >= 40) {
-                icon = [NSImage imageWithSystemSymbolName:@"battery.50" accessibilityDescription:@"Battery 50%"];
-            } else if (self.capacity >= 15) {
-                icon = [NSImage imageWithSystemSymbolName:@"battery.25" accessibilityDescription:@"Battery 25%"];
-            } else {
-                icon = [NSImage imageWithSystemSymbolName:@"battery.0" accessibilityDescription:@"Battery Low"];
-            }
-        }
-    }
-
-    // Build Menu Bar Title String
-    NSMutableArray *parts = [NSMutableArray array];
-
-    if (self.showPercentage) {
-        [parts addObject:[NSString stringWithFormat:@"%d%%", self.capacity]];
-    }
-
-    // Display wattage if plugged in and wattage display enabled
-    if (self.isConnected && self.showWattage) {
-        int displayWatts = self.adapterWatts;
-        if (self.showLiveFlow && self.liveWatts > 0.5f) {
-            displayWatts = (int)roundf(self.liveWatts);
-        }
-        if (displayWatts > 0) {
-            [parts addObject:[NSString stringWithFormat:@"%dW", displayWatts]];
-        }
-    }
-
-    NSString *title = [parts componentsJoinedByString:@" "];
-
+    NSImage *icon = [self renderConstantBatteryPillWithText:displayText capacity:self.capacity];
     self.statusItem.button.image = icon;
-    self.statusItem.button.title = title;
-    self.statusItem.button.imagePosition = icon ? NSImageLeading : NSNoImage;
+    self.statusItem.button.title = @"";
+    self.statusItem.button.imagePosition = NSImageOnly;
 
     // Tooltip
     if (self.isConnected) {
-        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeBar: %d%% · %dW (%@)", self.capacity, self.adapterWatts, self.adapterName];
+        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeBar: %d%% · %dW (%@)", self.capacity, watts, self.adapterName];
     } else {
         self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeBar: %d%% · On Battery", self.capacity];
     }
 }
 
-#pragma mark - Menu & Interactivity
+- (void)updateTelemetryAndUI {
+    [self readTelemetry];
+
+    // Detect Transition to Plugged In
+    BOOL wasConnected = self.previousConnected;
+    self.previousConnected = self.isConnected;
+
+    if (!wasConnected && self.isConnected) {
+        // Charger was just connected!
+        self.isPlugInFlashActive = YES;
+        [self updateIconOnly];
+
+        // After exactly 2.0 seconds, smoothly revert to percentage
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self.isPlugInFlashActive) {
+                self.isPlugInFlashActive = NO;
+                [self updateIconOnly];
+            }
+        });
+    } else {
+        [self updateIconOnly];
+    }
+
+    // Manage Live Refresh Timer (Runs gently every 4s only when charging, stopped on battery)
+    if (self.isConnected) {
+        if (!self.liveRefreshTimer) {
+            self.liveRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:4.0 target:self selector:@selector(updateTelemetryAndUI) userInfo:nil repeats:YES];
+        }
+    } else {
+        if (self.liveRefreshTimer) {
+            [self.liveRefreshTimer invalidate];
+            self.liveRefreshTimer = nil;
+        }
+    }
+}
+
+#pragma mark - Menu & Actions
 
 - (void)statusItemClicked:(id)sender {
     [self showMenu];
@@ -200,42 +303,38 @@ static void powerSourceNotificationCallback(void *context) {
     NSMenu *menu = [[NSMenu alloc] init];
     menu.autoenablesItems = NO;
 
-    // 1. Live Power Header
-    NSString *powerStateStr;
+    // 1. Power Header
+    NSString *powerStr;
     if (self.isConnected) {
-        if (self.adapterWatts > 0) {
-            powerStateStr = [NSString stringWithFormat:@"⚡ Connected: %dW (%@)", self.adapterWatts, self.adapterName];
-        } else {
-            powerStateStr = [NSString stringWithFormat:@"⚡ Connected: %@", self.adapterName];
-        }
+        int w = self.adapterWatts > 0 ? self.adapterWatts : (int)roundf(self.liveWatts);
+        powerStr = [NSString stringWithFormat:@"⚡ Connected: %dW (%@)", w, self.adapterName];
     } else {
-        powerStateStr = [NSString stringWithFormat:@"🔋 Power Source: Battery Power"];
+        powerStr = @"🔋 Power Source: Battery Power";
     }
-    NSMenuItem *headerItem = [[NSMenuItem alloc] initWithTitle:powerStateStr action:nil keyEquivalent:@""];
+    NSMenuItem *headerItem = [[NSMenuItem alloc] initWithTitle:powerStr action:nil keyEquivalent:@""];
     headerItem.enabled = NO;
     [menu addItem:headerItem];
 
-    // 2. Battery Percentage & State
-    NSString *chargeStatusStr = self.isCharging ? @"Charging" : (self.isConnected ? @"Fully Charged / On AC" : @"Discharging");
-    NSString *statusStr = [NSString stringWithFormat:@"   Battery: %d%% (%@)", self.capacity, chargeStatusStr];
+    // 2. Battery Percentage
+    NSString *statusStr = [NSString stringWithFormat:@"   Battery Level: %d%%", self.capacity];
     NSMenuItem *statusItem = [[NSMenuItem alloc] initWithTitle:statusStr action:nil keyEquivalent:@""];
     statusItem.enabled = NO;
     [menu addItem:statusItem];
 
-    // 3. Live Wattage Flow
+    // 3. Live Power Flow
     NSString *flowStr;
     if (self.liveWatts > 0.05f) {
         flowStr = [NSString stringWithFormat:@"   Net Flow: +%.1f W (Into battery)", self.liveWatts];
     } else if (self.liveWatts < -0.05f) {
         flowStr = [NSString stringWithFormat:@"   Net Flow: %.1f W (System draw)", self.liveWatts];
     } else {
-        flowStr = @"   Net Flow: 0.0 W (Idle / Wall Powered)";
+        flowStr = @"   Net Flow: 0.0 W (Idle / Wall Power)";
     }
     NSMenuItem *flowItem = [[NSMenuItem alloc] initWithTitle:flowStr action:nil keyEquivalent:@""];
     flowItem.enabled = NO;
     [menu addItem:flowItem];
 
-    // 4. Battery Health & Cycle Count
+    // 4. Health & Cycles
     NSString *healthStr = [NSString stringWithFormat:@"   Health: %.1f%%  ·  %d Cycles", self.healthPercent, self.cycleCount];
     NSMenuItem *healthItem = [[NSMenuItem alloc] initWithTitle:healthStr action:nil keyEquivalent:@""];
     healthItem.enabled = NO;
@@ -260,27 +359,10 @@ static void powerSourceNotificationCallback(void *context) {
 
     [menu addItem:[NSMenuItem separatorItem]];
 
-    // Preferences Toggles
-    NSMenuItem *wattToggle = [[NSMenuItem alloc] initWithTitle:@"Show Charging Wattage" action:@selector(toggleWattage) keyEquivalent:@"w"];
-    wattToggle.state = self.showWattage ? NSControlStateValueOn : NSControlStateValueOff;
-    wattToggle.target = self;
-    [menu addItem:wattToggle];
-
-    NSMenuItem *pctToggle = [[NSMenuItem alloc] initWithTitle:@"Show Battery Percentage" action:@selector(togglePercentage) keyEquivalent:@"p"];
-    pctToggle.state = self.showPercentage ? NSControlStateValueOn : NSControlStateValueOff;
-    pctToggle.target = self;
-    [menu addItem:pctToggle];
-
-    NSMenuItem *iconToggle = [[NSMenuItem alloc] initWithTitle:@"Show Battery Icon" action:@selector(toggleIcon) keyEquivalent:@"i"];
-    iconToggle.state = self.showIcon ? NSControlStateValueOn : NSControlStateValueOff;
-    iconToggle.target = self;
-    [menu addItem:iconToggle];
-
-    [menu addItem:[NSMenuItem separatorItem]];
-
-    NSMenuItem *tipItem = [[NSMenuItem alloc] initWithTitle:@"💡 Tip: Hide macOS battery in Settings → Control Center" action:nil keyEquivalent:@""];
-    tipItem.enabled = NO;
-    [menu addItem:tipItem];
+    // Action to Hide macOS Stock Battery Icon
+    NSMenuItem *hideStockItem = [[NSMenuItem alloc] initWithTitle:@"🎛 Open Control Center Settings (Hide Stock Battery)" action:@selector(openControlCenterSettings) keyEquivalent:@""];
+    hideStockItem.target = self;
+    [menu addItem:hideStockItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
@@ -301,19 +383,9 @@ static void powerSourceNotificationCallback(void *context) {
     self.statusItem.menu = nil;
 }
 
-- (void)toggleWattage {
-    self.showWattage = !self.showWattage;
-    [self updateTelemetryAndUI];
-}
-
-- (void)togglePercentage {
-    self.showPercentage = !self.showPercentage;
-    [self updateTelemetryAndUI];
-}
-
-- (void)toggleIcon {
-    self.showIcon = !self.showIcon;
-    [self updateTelemetryAndUI];
+- (void)openControlCenterSettings {
+    // Open System Settings -> Control Center directly
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.ControlCenter-Settings.extension"]];
 }
 
 - (void)openFeedback {
@@ -322,8 +394,8 @@ static void powerSourceNotificationCallback(void *context) {
 
 - (void)showAbout {
     NSAlert *about = [[NSAlert alloc] init];
-    about.messageText = @"ChargeBar 1.0";
-    about.informativeText = @"Featherlight menu bar battery monitor with real-time charging wattage, adapter telemetry, and battery health.\n\nCrafted with native AppKit for 0.0% CPU overhead.";
+    about.messageText = @"ChargeBar 1.1";
+    about.informativeText = @"Stock-matching native battery icon with live wattage on plug-in & hover, adapter telemetry, and health monitoring.\n\nCrafted with native AppKit for 0.0% CPU overhead.";
     [about addButtonWithTitle:@"OK"];
     [NSApp activateIgnoringOtherApps:YES];
     [about runModal];
