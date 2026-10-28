@@ -4,7 +4,7 @@
   <h1>ChargeWatts</h1>
   <p><strong>1:1 pixel-perfect Apple battery replacement that shows live wattage on hover & plug-in.</strong></p>
 
-  [![Support on Gumroad](https://img.shields.io/badge/Support_on_Gumroad-%242.99+-102039?style=for-the-badge&logo=gumroad&logoColor=white)](https://monolab-apps.gumroad.com/l/chargewatts)
+  [![Support on Gumroad](https://img.shields.io/badge/Support_on_Gumroad-%242.99+-102039?style=for-the-badge&logo=gumroad&logoColor=white)](https://monolabapps.gumroad.com/l/chargewatts)
   [![Free Release](https://img.shields.io/badge/Download-Free_DMG_(v1.2.0)-success?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/alaska14/chargewatts/releases/latest)
   [![AlternativeTo](https://img.shields.io/badge/AlternativeTo-Listed-blue?style=for-the-badge)](https://alternativeto.net/software/chargewatts/)
   [![Homebrew](https://img.shields.io/badge/Homebrew-v1.2.0-orange?style=for-the-badge&logo=homebrew&logoColor=white)](#-installation)
@@ -57,4 +57,4 @@ If you ever wish to remove ChargeWatts, you never have to search through setting
 
 ---
 
-Crafted with care by **MonoLab** ([monolab-apps.gumroad.com](https://monolab-apps.gumroad.com)).
+Crafted with care by **MonoLab** ([monolabapps.gumroad.com](https://monolabapps.gumroad.com)).
