@@ -95,6 +95,7 @@ static void powerSourceChangedCallback(void *context) {
 
     [self updateTelemetryAndUI];
     [self setupTrackingArea];
+    [self ensureAutoStart];
 }
 
 - (void)setupTrackingArea {
@@ -505,7 +506,15 @@ static void powerSourceChangedCallback(void *context) {
 
     [menu addItem:[NSMenuItem separatorItem]];
 
-    // 4. Clean Actions
+    // 4. Launch at Login
+    BOOL isLoginItem = [self isAutoStartEnabled];
+    NSMenuItem *loginItem = [[NSMenuItem alloc] initWithTitle:(isLoginItem ? @"✓ Launch at Login" : @"  Launch at Login")
+                                                       action:@selector(toggleAutoStart)
+                                                keyEquivalent:@""];
+    loginItem.target = self;
+    [menu addItem:loginItem];
+
+    // 5. Clean Actions
     NSMenuItem *hideStockItem = [[NSMenuItem alloc] initWithTitle:@"Battery Settings..." action:@selector(openControlCenterSettings) keyEquivalent:@""];
     hideStockItem.target = self;
     [menu addItem:hideStockItem];
@@ -541,6 +550,52 @@ static void powerSourceChangedCallback(void *context) {
     [about addButtonWithTitle:@"OK"];
     [NSApp activateIgnoringOtherApps:YES];
     [about runModal];
+}
+
+- (BOOL)isAutoStartEnabled {
+    NSDictionary *error = nil;
+    NSAppleScript *as = [[NSAppleScript alloc] initWithSource:
+        @"tell application \"System Events\"\n"
+        @"  return exists (login item \"ChargeWatts\")\n"
+        @"end tell"];
+    NSAppleEventDescriptor *desc = [as executeAndReturnError:&error];
+    return [desc booleanValue];
+}
+
+- (void)toggleAutoStart {
+    BOOL current = [self isAutoStartEnabled];
+    NSString *appPath = [[NSBundle mainBundle] bundlePath];
+    NSString *script;
+    if (current) {
+        script = @"tell application \"System Events\"\n"
+                 @"  delete login item \"ChargeWatts\"\n"
+                 @"end tell";
+    } else {
+        script = [NSString stringWithFormat:
+                 @"tell application \"System Events\"\n"
+                 @"  make login item at end with properties {path:\"%@\", hidden:false}\n"
+                 @"end tell", appPath];
+    }
+    NSAppleScript *as = [[NSAppleScript alloc] initWithSource:script];
+    [as executeAndReturnError:nil];
+}
+
+- (void)ensureAutoStart {
+    NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+    if (![defs boolForKey:@"hasConfiguredAutoStart"]) {
+        [defs setBool:YES forKey:@"hasConfiguredAutoStart"];
+        NSString *appPath = [[NSBundle mainBundle] bundlePath];
+        if (appPath && [appPath hasPrefix:@"/Applications"]) {
+            NSString *script = [NSString stringWithFormat:
+                @"tell application \"System Events\"\n"
+                @"  if not (exists (login item \"ChargeWatts\")) then\n"
+                @"    make login item at end with properties {path:\"%@\", hidden:false}\n"
+                @"  end if\n"
+                @"end tell", appPath];
+            NSAppleScript *as = [[NSAppleScript alloc] initWithSource:script];
+            [as executeAndReturnError:nil];
+        }
+    }
 }
 
 - (void)quitApp {
