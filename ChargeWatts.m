@@ -41,9 +41,18 @@ static void powerSourceChangedCallback(void *context) {
     });
 }
 
+static void terminationSignalHandler(int sig) {
+    system("/usr/bin/defaults -currentHost write com.apple.controlcenter Battery -int 2 && /usr/bin/killall ControlCenter");
+    _exit(0);
+}
+
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
+    signal(SIGTERM, terminationSignalHandler);
+    signal(SIGINT, terminationSignalHandler);
+    signal(SIGHUP, terminationSignalHandler);
+
     self.previousConnected = NO;
     self.isHovered = NO;
     self.isPlugInFlashActive = NO;
@@ -257,22 +266,23 @@ static void powerSourceChangedCallback(void *context) {
 
 #pragma mark - Constant Stock Battery Pill Rendering (Exact 1:1 Apple Golden Gate Replication)
 
-- (NSImage *)renderConstantBatteryPillWithText:(NSString *)text capacity:(int)capacity {
-    // Exact 1:1 Apple macOS Golden Gate geometry (evaluated & verified against stock crop):
-    // Canvas: 28.0 x 22.0 pt (22pt native menu bar height, 1.0pt margin gives full anti-aliasing breathing room)
-    // Body: 23.0 x 12.0 pt with 4.5 pt continuous squircle radius (smooth curvature on all corners, zero pointiness)
-    // Detached Nub: 1.4 x 4.4 pt rounded convex cap with 1.0 pt gap from body (52% opacity)
-    // Font: SF Pro 10.2pt Light (soft 68% opacity matching Apple's muted cutout figures, not harsh white)
-    // Vertical Centering: Mathematically dead-centered using font.capHeight & font.descender with -0.50pt optical tweak
-    // When wattage is displayed (e.g. "67W"): 8.5pt Light, pill geometry remains 100% rock-solid constant!
-    CGFloat totalW = 28.0;
+- (NSImage *)renderConstantBatteryPillWithText:(NSString *)text capacity:(int)capacity showBolt:(BOOL)showBolt {
+    // 1:1 Apple macOS Golden Gate geometry evaluated directly against native stock crop:
+    // Canvas: 28.0 x 22.0 pt
+    // Body: 23.5 x 12.0 pt with 3.5 pt squarish continuous squircle radius
+    // Detached Nub: 1.4 x 5.0 pt convex cap with 1.0 pt gap from body (52% opacity)
+    // Font: .AppleSystemUIFontRounded-Medium (exact Apple menu bar battery font)
+    // Cutout: True Stencil Cutout using kCGBlendModeDestinationOut (takes exact wallpaper color!)
+    // Centering: Numbers + Bolt strictly centered as a single unified unit inside battery body!
+    CGFloat totalW = 28.5;
     CGFloat totalH = 22.0;
 
-    CGFloat bodyW = 23.0;
+    CGFloat bodyW = 24.5;
     CGFloat bodyH = 12.0;
-    CGFloat radius = 4.5;
+    CGFloat radius = 3.5;
+
     CGFloat nubW = 1.4;
-    CGFloat nubH = 4.4;
+    CGFloat nubH = 5.0;
     CGFloat nubGap = 1.0;
 
     __weak typeof(self) weakSelf = self;
@@ -286,22 +296,21 @@ static void powerSourceChangedCallback(void *context) {
             isDark = [weakSelf.statusItem.button.effectiveAppearance.name containsString:@"Dark"];
         }
 
-        // Apple Golden Gate palette:
-        NSColor *pillColor = isDark ? [NSColor colorWithCalibratedWhite:1.0 alpha:1.0] : [NSColor colorWithCalibratedWhite:0.06 alpha:1.0];
-        NSColor *textColor = isDark ? [NSColor colorWithCalibratedWhite:0.06 alpha:1.0] : [NSColor colorWithCalibratedWhite:1.0 alpha:1.0];
-        NSColor *nubColor = [pillColor colorWithAlphaComponent:0.52];
+        NSColor *pillColor = isDark ? [NSColor colorWithCalibratedWhite:1.0 alpha:0.94] : [NSColor colorWithCalibratedWhite:0.06 alpha:0.94];
+        NSColor *nubColor = [pillColor colorWithAlphaComponent:0.55];
 
-        // 1.0pt left margin gives the squircle curve full breathing room
-        NSRect bodyRect = NSMakeRect(1.0, (totalH - bodyH) / 2.0, bodyW, bodyH);
+        CGFloat bodyX = 0.8;
+        CGFloat bodyY = (totalH - bodyH) / 2.0;
+        NSRect bodyRect = NSMakeRect(bodyX, bodyY, bodyW, bodyH);
 
-        // 1. Solid Battery Pill Body (Apple Golden Gate design, fully symmetric squircle)
+        // 1. Solid Battery Pill Body (Apple squarish curvature)
         NSBezierPath *pillPath = [NSBezierPath bezierPathWithRoundedRect:bodyRect xRadius:radius yRadius:radius];
         [pillColor set];
         [pillPath fill];
 
-        // 2. Detached Terminal Nub: straight on left, semi-ellipse arc on right
+        // 2. Detached Terminal Nub (flat on left, convex arc on right)
         CGFloat nubX = NSMaxX(bodyRect) + nubGap;
-        CGFloat nubY = bodyRect.origin.y + (bodyH - nubH) / 2.0;
+        CGFloat nubY = bodyY + (bodyH - nubH) / 2.0;
 
         NSBezierPath *nubPath = [NSBezierPath bezierPath];
         [nubPath moveToPoint:NSMakePoint(nubX, nubY)];
@@ -317,25 +326,57 @@ static void powerSourceChangedCallback(void *context) {
         [nubColor set];
         [nubPath fill];
 
-        // 3. Crisp Thin Cutout Digits (SF Pro Light: 10.2pt for percentage, 8.5pt for wattage)
-        CGFloat fontSize = (text.length >= 3) ? 8.5 : 10.2;
-        CGFloat kern = (text.length >= 3) ? -0.30 : -0.25;
+        // 3. Stencil Cutout with DestinationOut (takes exact background wallpaper color)
+        CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+        CGContextSaveGState(ctx);
+        CGContextSetBlendMode(ctx, kCGBlendModeDestinationOut);
 
-        NSFont *font = [NSFont systemFontOfSize:fontSize weight:NSFontWeightLight];
+        CGFloat fontSize = (text.length >= 3) ? 8.8 : 9.4;
+        CGFloat kern = (text.length >= 3) ? -0.38 : -0.20;
+        CGFloat textOffset = (text.length >= 3) ? 0.25 : 0.20;
+
+        NSFont *baseFont = [NSFont systemFontOfSize:fontSize weight:NSFontWeightMedium];
+        NSFontDescriptor *desc = [baseFont.fontDescriptor fontDescriptorWithDesign:NSFontDescriptorSystemDesignRounded];
+        NSFont *font = [NSFont fontWithDescriptor:desc size:fontSize] ?: baseFont;
+
         NSDictionary *attrs = @{
             NSFontAttributeName: font,
-            // Soft 68% opacity matching Apple's muted cutout figures (Rank #1 MSE)
-            NSForegroundColorAttributeName: [textColor colorWithAlphaComponent:0.68],
+            NSForegroundColorAttributeName: [NSColor blackColor],
             NSKernAttributeName: @(kern)
         };
-        NSSize textSize = [text sizeWithAttributes:attrs];
+        NSAttributedString *aStr = [[NSAttributedString alloc] initWithString:text attributes:attrs];
+        NSSize textSize = [aStr size];
 
-        CGFloat textX = NSMidX(bodyRect) - textSize.width / 2.0;
-        // Optimal vertical center evaluated directly against ground truth
-        CGFloat textY = NSMidY(bodyRect) + font.descender - font.capHeight / 2.0 - 0.50;
+        CGFloat boltW = (text.length >= 3) ? 4.0 : 4.8;
+        CGFloat boltH = (text.length >= 3) ? 7.2 : 8.0;
+        CGFloat boltGap = (text.length >= 3) ? 0.8 : 1.0;
 
-        [text drawAtPoint:NSMakePoint(textX, textY) withAttributes:attrs];
+        // Strictly center (numbers + bolt) as a unified unit inside the battery body
+        CGFloat contentW = showBolt ? (textSize.width + boltGap + boltW) : textSize.width;
+        CGFloat startContentX = bodyX + (bodyW - contentW) / 2.0;
+        CGFloat textY = bodyY + (bodyH - textSize.height) / 2.0 + textOffset;
 
+        [aStr drawAtPoint:NSMakePoint(startContentX, textY)];
+
+        if (showBolt) {
+            CGFloat boltX = startContentX + textSize.width + boltGap;
+            CGFloat boltY = bodyY + (bodyH - boltH) / 2.0 + 0.10;
+
+            // Sharp pointy top and bottom tips with bold Retina body silhouette
+            NSBezierPath *boltPath = [NSBezierPath bezierPath];
+            [boltPath moveToPoint:NSMakePoint(boltX + boltW * 0.82, boltY + boltH)];
+            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.56, boltY + boltH * 0.56)];
+            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 1.00, boltY + boltH * 0.54)];
+            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.18, boltY)];
+            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.44, boltY + boltH * 0.44)];
+            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.00, boltY + boltH * 0.46)];
+            [boltPath closePath];
+
+            [[NSColor blackColor] set];
+            [boltPath fill];
+        }
+
+        CGContextRestoreGState(ctx);
         return YES;
     }];
 
@@ -365,9 +406,6 @@ static void powerSourceChangedCallback(void *context) {
 
     int watts = self.adapterWatts;
     if (self.isConnected && (self.capacity >= 100 || (self.isFullyCharged && !self.isCharging))) {
-        // At 100% / Fully charged on AC pass-through:
-        // User requested: "when the battery is at 100 % it should be clear to the user that it's not charging,
-        // so when the mouse hovers over it it should display the Current draw."
         watts = (int)roundf([self currentActiveDrawWatts]);
     } else if (watts <= 0 && fabsf(self.liveWatts) > 0.5f) {
         watts = (int)roundf(fabsf(self.liveWatts));
@@ -377,20 +415,28 @@ static void powerSourceChangedCallback(void *context) {
     }
 
     // Exact User Rules:
-    // 1. When running on battery and mouse is away: totally stock percentage number (e.g. "71", no % sign).
-    // 2. When hovering mouse over symbol: change to wattage followed by capital 'W' (e.g. "15W" on battery, "67W" on charger, or live Current Draw e.g. "10W" at 100%).
-    // 3. When mouse leaves: swiftly switch back to stock percentage ("71").
-    // 4. When plugged into charger: automatically show charging wattage ("67W") for 2.0 seconds, then revert to percentage.
-    // 5. The battery outline, fill, and nub remain 100% constant and stationary!
+    // 1. When running on battery and mouse is away: stock percentage number, no bolt.
+    // 2. When plugged into charger and mouse is away: stock percentage number + tiny lightning bolt, centered together!
+    // 3. When hovering mouse over symbol: change to wattage followed by capital 'W' (e.g. "11W" or "67W") WITHOUT flash icon!
+    // 4. When mouse leaves: swiftly switch back to stock view.
+    // 5. When plugged into charger: show charging wattage for 2.0 seconds, then revert.
     NSString *displayText;
-    if (self.isHovered || (self.isConnected && self.isPlugInFlashActive)) {
+    BOOL showBolt = NO;
+    if (self.isHovered) {
         displayText = [NSString stringWithFormat:@"%dW", watts];
+        showBolt = NO;
+    } else if (self.isConnected && self.isPlugInFlashActive) {
+        displayText = [NSString stringWithFormat:@"%dW", watts];
+        showBolt = NO;
     } else {
         displayText = [NSString stringWithFormat:@"%d", self.capacity];
+        showBolt = self.isConnected;
     }
 
-    NSImage *icon = [self renderConstantBatteryPillWithText:displayText capacity:self.capacity];
+    NSImage *icon = [self renderConstantBatteryPillWithText:displayText capacity:self.capacity showBolt:showBolt];
     self.statusItem.button.image = icon;
+    self.statusItem.button.title = @"";
+    self.statusItem.button.imagePosition = NSImageOnly;
     self.statusItem.button.title = @"";
     self.statusItem.button.imagePosition = NSImageOnly;
 
