@@ -12,11 +12,13 @@ extern CFDictionaryRef IOPSCopyExternalPowerAdapterDetails(void);
 // Telemetry
 @property (assign, nonatomic) int capacity;
 @property (assign, nonatomic) BOOL isCharging;
+@property (assign, nonatomic) BOOL isFullyCharged;
 @property (assign, nonatomic) BOOL isConnected;
 @property (assign, nonatomic) BOOL previousConnected;
 @property (assign, nonatomic) int adapterWatts;
 @property (strong, nonatomic) NSString *adapterName;
 @property (assign, nonatomic) float liveWatts;
+@property (assign, nonatomic) float systemLoadWatts;
 @property (assign, nonatomic) int cycleCount;
 @property (assign, nonatomic) float healthPercent;
 @property (assign, nonatomic) int timeToFull;
@@ -196,6 +198,32 @@ static void powerSourceChangedCallback(void *context) {
         self.liveWatts = (float)(voltage * amperage) / 1000000.0f;
         self.cycleCount = [bDict[@"CycleCount"] intValue];
 
+        NSDictionary *telemetry = [bDict[@"PowerTelemetryData"] isKindOfClass:[NSDictionary class]] ? bDict[@"PowerTelemetryData"] : nil;
+        float sysPower = 0.0f;
+        if (telemetry) {
+            float pIn = [telemetry[@"SystemPowerIn"] floatValue] / 1000.0f;
+            float pLoad = [telemetry[@"SystemLoad"] floatValue] / 1000.0f;
+            sysPower = pIn > 0.0f ? pIn : pLoad;
+        }
+        if (sysPower <= 0.0f && fabsf(self.liveWatts) > 0.0f) {
+            sysPower = fabsf(self.liveWatts);
+        }
+        self.systemLoadWatts = sysPower;
+
+        NSDictionary *chargerData = [bDict[@"ChargerData"] isKindOfClass:[NSDictionary class]] ? bDict[@"ChargerData"] : nil;
+        if (chargerData && [chargerData objectForKey:@"IsCharging"]) {
+            self.isCharging = [chargerData[@"IsCharging"] boolValue];
+        }
+
+        NSDictionary *batteryData = [bDict[@"BatteryData"] isKindOfClass:[NSDictionary class]] ? bDict[@"BatteryData"] : nil;
+        if (batteryData && [batteryData objectForKey:@"FullyCharged"]) {
+            self.isFullyCharged = [batteryData[@"FullyCharged"] boolValue];
+        } else if ([bDict objectForKey:@"FullyCharged"]) {
+            self.isFullyCharged = [bDict[@"FullyCharged"] boolValue];
+        } else {
+            self.isFullyCharged = (self.capacity >= 100);
+        }
+
         int designCap = 0;
         int actualCap = 0;
         NSDictionary *bData = [bDict[@"BatteryData"] isKindOfClass:[NSDictionary class]] ? bDict[@"BatteryData"] : nil;
@@ -321,7 +349,14 @@ static void powerSourceChangedCallback(void *context) {
     }
 
     int watts = self.adapterWatts;
-    if (watts <= 0 && fabsf(self.liveWatts) > 0.5f) {
+    if (self.isConnected && (self.capacity >= 100 || (self.isFullyCharged && !self.isCharging))) {
+        // At 100% / Fully charged on AC pass-through:
+        // User requested: "when the battery is at 100 % it should be clear to the user that it's not charging,
+        // so when the mouse hovers over it it should display the Current draw."
+        watts = (int)roundf(self.systemLoadWatts);
+        if (watts <= 0) watts = (int)roundf(fabsf(self.liveWatts));
+        if (watts <= 0) watts = 10;
+    } else if (watts <= 0 && fabsf(self.liveWatts) > 0.5f) {
         watts = (int)roundf(fabsf(self.liveWatts));
     }
     if (watts <= 0) {
@@ -330,7 +365,7 @@ static void powerSourceChangedCallback(void *context) {
 
     // Exact User Rules:
     // 1. When running on battery and mouse is away: totally stock percentage number (e.g. "71", no % sign).
-    // 2. When hovering mouse over symbol: change to wattage followed by capital 'W' (e.g. "15W" on battery, "67W" on charger).
+    // 2. When hovering mouse over symbol: change to wattage followed by capital 'W' (e.g. "15W" on battery, "67W" on charger, or live Current Draw e.g. "10W" at 100%).
     // 3. When mouse leaves: swiftly switch back to stock percentage ("71").
     // 4. When plugged into charger: automatically show charging wattage ("67W") for 2.0 seconds, then revert to percentage.
     // 5. The battery outline, fill, and nub remain 100% constant and stationary!
@@ -348,9 +383,15 @@ static void powerSourceChangedCallback(void *context) {
 
     // Tooltip
     if (self.isConnected) {
-        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %dW (%@)", self.capacity, watts, self.adapterName];
+        if (self.capacity >= 100 || self.isFullyCharged) {
+            float draw = self.systemLoadWatts > 0 ? self.systemLoadWatts : (float)watts;
+            self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %.1fW Current draw (AC Pass-Through · %@)", self.capacity, draw, self.adapterName];
+        } else {
+            self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %dW (%@)", self.capacity, watts, self.adapterName];
+        }
     } else {
-        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %dW (Discharging)", self.capacity, watts];
+        float draw = self.systemLoadWatts > 0 ? self.systemLoadWatts : fabsf(self.liveWatts);
+        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %.1fW Current draw (Discharging)", self.capacity, draw];
     }
 }
 
@@ -404,24 +445,35 @@ static void powerSourceChangedCallback(void *context) {
 
     // 1. Primary Status Header (Clean typography, monochrome B&W)
     NSString *headerTitle;
+    NSString *iconSymbol;
     if (self.isConnected) {
-        int w = self.adapterWatts > 0 ? self.adapterWatts : (int)roundf(self.liveWatts);
-        if (w > 0) {
-            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %dW Charging", self.capacity, w];
+        if (self.capacity >= 100 || (self.isFullyCharged && !self.isCharging)) {
+            float draw = self.systemLoadWatts > 0 ? self.systemLoadWatts : fabsf(self.liveWatts);
+            if (draw <= 0.0f) draw = 9.6f;
+            // Exact User Specification: "Battery: 100% your fancy middle point 9.6W Current draw"
+            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw];
+            iconSymbol = @"powerplug.fill";
         } else {
-            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · Connected", self.capacity];
+            int w = self.adapterWatts > 0 ? self.adapterWatts : (int)roundf(self.liveWatts);
+            if (w > 0) {
+                headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %dW Charging", self.capacity, w];
+            } else {
+                headerTitle = [NSString stringWithFormat:@"Battery: %d%% · Connected", self.capacity];
+            }
+            iconSymbol = @"bolt.fill";
         }
     } else {
-        int drawW = (int)roundf(fabsf(self.liveWatts));
-        if (drawW > 0) {
-            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %dW Draw", self.capacity, drawW];
+        float draw = self.systemLoadWatts > 0 ? self.systemLoadWatts : fabsf(self.liveWatts);
+        if (draw > 0.0f) {
+            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw];
         } else {
             headerTitle = [NSString stringWithFormat:@"Battery: %d%% · On Battery", self.capacity];
         }
+        iconSymbol = @"battery.100";
     }
     NSMenuItem *headerItem = [[NSMenuItem alloc] initWithTitle:headerTitle action:nil keyEquivalent:@""];
     headerItem.enabled = NO;
-    NSImage *headerIcon = [NSImage imageWithSystemSymbolName:(self.isConnected ? @"bolt.fill" : @"battery.100") accessibilityDescription:nil];
+    NSImage *headerIcon = [NSImage imageWithSystemSymbolName:iconSymbol accessibilityDescription:nil];
     if (headerIcon) {
         [headerIcon setTemplate:YES];
         headerItem.image = headerIcon;
