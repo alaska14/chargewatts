@@ -96,6 +96,7 @@ static void powerSourceChangedCallback(void *context) {
     [self updateTelemetryAndUI];
     [self setupTrackingArea];
     [self ensureAutoStart];
+    [self ensureStockBatteryReplaced];
 }
 
 - (void)setupTrackingArea {
@@ -514,16 +515,27 @@ static void powerSourceChangedCallback(void *context) {
     loginItem.target = self;
     [menu addItem:loginItem];
 
-    // 5. Clean Actions
-    NSMenuItem *hideStockItem = [[NSMenuItem alloc] initWithTitle:@"Battery Settings..." action:@selector(openControlCenterSettings) keyEquivalent:@""];
+    // 5. Replace / Hide Apple Stock Battery
+    BOOL stockHidden = [self isStockBatteryHidden];
+    NSMenuItem *hideStockItem = [[NSMenuItem alloc] initWithTitle:(stockHidden ? @"✓ Hide Apple Stock Battery" : @"  Hide Apple Stock Battery")
+                                                           action:@selector(toggleStockBatteryHidden)
+                                                    keyEquivalent:@""];
     hideStockItem.target = self;
     [menu addItem:hideStockItem];
+
+    NSMenuItem *settingsItem = [[NSMenuItem alloc] initWithTitle:@"Battery Settings..." action:@selector(openControlCenterSettings) keyEquivalent:@""];
+    settingsItem.target = self;
+    [menu addItem:settingsItem];
 
     [menu addItem:[NSMenuItem separatorItem]];
 
     NSMenuItem *aboutItem = [[NSMenuItem alloc] initWithTitle:@"About ChargeWatts" action:@selector(showAbout) keyEquivalent:@""];
     aboutItem.target = self;
     [menu addItem:aboutItem];
+
+    NSMenuItem *uninstallItem = [[NSMenuItem alloc] initWithTitle:@"Uninstall ChargeWatts..." action:@selector(uninstallChargeWatts) keyEquivalent:@""];
+    uninstallItem.target = self;
+    [menu addItem:uninstallItem];
 
     NSMenuItem *quitItem = [[NSMenuItem alloc] initWithTitle:@"Quit ChargeWatts" action:@selector(quitApp) keyEquivalent:@"q"];
     quitItem.target = self;
@@ -598,7 +610,105 @@ static void powerSourceChangedCallback(void *context) {
     }
 }
 
+- (BOOL)isStockBatteryHidden {
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/usr/bin/defaults";
+    task.arguments = @[@"-currentHost", @"read", @"com.apple.controlcenter", @"Battery"];
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = [NSPipe pipe];
+    @try {
+        [task launch];
+        [task waitUntilExit];
+        NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
+        NSString *outStr = [[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        return [outStr isEqualToString:@"8"];
+    } @catch (NSException *e) {
+        return NO;
+    }
+}
+
+- (void)setStockBatteryHidden:(BOOL)hidden {
+    NSString *valStr = hidden ? @"8" : @"2";
+    @try {
+        NSTask *task = [[NSTask alloc] init];
+        task.launchPath = @"/usr/bin/defaults";
+        task.arguments = @[@"-currentHost", @"write", @"com.apple.controlcenter", @"Battery", @"-int", valStr];
+        [task launch];
+        [task waitUntilExit];
+
+        NSTask *killTask = [[NSTask alloc] init];
+        killTask.launchPath = @"/usr/bin/killall";
+        killTask.arguments = @[@"ControlCenter"];
+        [killTask launch];
+        [killTask waitUntilExit];
+    } @catch (NSException *e) {
+    }
+}
+
+- (void)toggleStockBatteryHidden {
+    BOOL current = [self isStockBatteryHidden];
+    BOOL newHidden = !current;
+    [[NSUserDefaults standardUserDefaults] setBool:(!newHidden) forKey:@"userDisabledStockBatteryHiding"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+    [self setStockBatteryHidden:newHidden];
+}
+
+- (void)ensureStockBatteryReplaced {
+    NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+    // Automatically hide stock battery on launch so user never has duplicate battery icons
+    if (![defs boolForKey:@"userDisabledStockBatteryHiding"]) {
+        if (![self isStockBatteryHidden]) {
+            [self setStockBatteryHidden:YES];
+        }
+    }
+}
+
+- (void)uninstallChargeWatts {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Uninstall ChargeWatts?";
+    alert.informativeText = @"This will automatically restore the original Apple stock battery in your menu bar, remove ChargeWatts from Login Items, and move the app to the Trash.";
+    [alert addButtonWithTitle:@"Uninstall & Restore"];
+    [alert addButtonWithTitle:@"Cancel"];
+    [NSApp activateIgnoringOtherApps:YES];
+    NSInteger response = [alert runModal];
+    if (response == NSAlertFirstButtonReturn) {
+        // 1. Immediately restore original Apple stock battery at slot 400
+        [self setStockBatteryHidden:NO];
+
+        // 2. Remove Login Item
+        NSString *script = @"tell application \"System Events\"\n"
+                           @"  if exists (login item \"ChargeWatts\") then\n"
+                           @"    delete login item \"ChargeWatts\"\n"
+                           @"  end if\n"
+                           @"end tell";
+        NSAppleScript *as = [[NSAppleScript alloc] initWithSource:script];
+        [as executeAndReturnError:nil];
+
+        // 3. Move app bundle to Trash
+        NSString *appPath = [[NSBundle mainBundle] bundlePath];
+        if (appPath) {
+            [[NSFileManager defaultManager] trashItemAtURL:[NSURL fileURLWithPath:appPath] resultingItemURL:nil error:nil];
+        }
+
+        // 4. Terminate cleanly
+        [NSApp terminate:nil];
+    }
+}
+
+- (void)restoreStockBatteryOnExit {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:@"userDisabledStockBatteryHiding"]) {
+        [self setStockBatteryHidden:NO];
+    }
+}
+
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    // When ChargeWatts quits, restore the original Apple stock battery so the menu bar is never left without a battery
+    [self restoreStockBatteryOnExit];
+}
+
 - (void)quitApp {
+    [self restoreStockBatteryOnExit];
     [NSApp terminate:nil];
 }
 
