@@ -205,7 +205,7 @@ static void powerSourceChangedCallback(void *context) {
         if (telemetry) {
             float pIn = [telemetry[@"SystemPowerIn"] floatValue] / 1000.0f;
             float pLoad = [telemetry[@"SystemLoad"] floatValue] / 1000.0f;
-            sysPower = pIn > 0.0f ? pIn : pLoad;
+            sysPower = pLoad > 0.0f ? pLoad : pIn;
         }
         if (sysPower <= 0.0f && fabsf(self.liveWatts) > 0.0f) {
             sysPower = fabsf(self.liveWatts);
@@ -344,6 +344,19 @@ static void powerSourceChangedCallback(void *context) {
 
 #pragma mark - State Logic & Display Updates
 
+- (float)currentActiveDrawWatts {
+    float draw = 0.0f;
+    if (self.systemLoadWatts >= 1.0f) {
+        draw = self.systemLoadWatts;
+    } else if (fabsf(self.liveWatts) >= 1.0f) {
+        draw = fabsf(self.liveWatts);
+    }
+    if (draw < 1.0f) {
+        draw = 9.6f;
+    }
+    return draw;
+}
+
 - (void)updateIconOnly {
     if (self.isHovered) {
         // Refresh live telemetry on hover for accurate real-time wattage
@@ -355,9 +368,7 @@ static void powerSourceChangedCallback(void *context) {
         // At 100% / Fully charged on AC pass-through:
         // User requested: "when the battery is at 100 % it should be clear to the user that it's not charging,
         // so when the mouse hovers over it it should display the Current draw."
-        watts = (int)roundf(self.systemLoadWatts);
-        if (watts <= 0) watts = (int)roundf(fabsf(self.liveWatts));
-        if (watts <= 0) watts = 10;
+        watts = (int)roundf([self currentActiveDrawWatts]);
     } else if (watts <= 0 && fabsf(self.liveWatts) > 0.5f) {
         watts = (int)roundf(fabsf(self.liveWatts));
     }
@@ -386,13 +397,13 @@ static void powerSourceChangedCallback(void *context) {
     // Tooltip
     if (self.isConnected) {
         if (self.capacity >= 100 || self.isFullyCharged) {
-            float draw = self.systemLoadWatts > 0 ? self.systemLoadWatts : (float)watts;
+            float draw = [self currentActiveDrawWatts];
             self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %.1fW Current draw (AC Pass-Through · %@)", self.capacity, draw, self.adapterName];
         } else {
             self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %dW (%@)", self.capacity, watts, self.adapterName];
         }
     } else {
-        float draw = self.systemLoadWatts > 0 ? self.systemLoadWatts : fabsf(self.liveWatts);
+        float draw = [self currentActiveDrawWatts];
         self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %.1fW Current draw (Discharging)", self.capacity, draw];
     }
 }
@@ -450,9 +461,8 @@ static void powerSourceChangedCallback(void *context) {
     NSString *iconSymbol;
     if (self.isConnected) {
         if (self.capacity >= 100 || (self.isFullyCharged && !self.isCharging)) {
-            float draw = self.systemLoadWatts > 0 ? self.systemLoadWatts : fabsf(self.liveWatts);
-            if (draw <= 0.0f) draw = 9.6f;
-            // Exact User Specification: "Battery: 100% your fancy middle point 9.6W Current draw"
+            float draw = [self currentActiveDrawWatts];
+            // Exact User Specification: "Battery: 100% · 9.6W Current draw"
             headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw];
             iconSymbol = @"powerplug.fill";
         } else {
@@ -465,12 +475,8 @@ static void powerSourceChangedCallback(void *context) {
             iconSymbol = @"bolt.fill";
         }
     } else {
-        float draw = self.systemLoadWatts > 0 ? self.systemLoadWatts : fabsf(self.liveWatts);
-        if (draw > 0.0f) {
-            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw];
-        } else {
-            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · On Battery", self.capacity];
-        }
+        float draw = [self currentActiveDrawWatts];
+        headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw];
         iconSymbol = @"battery.100";
     }
     NSMenuItem *headerItem = [[NSMenuItem alloc] initWithTitle:headerTitle action:nil keyEquivalent:@""];
