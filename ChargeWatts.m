@@ -297,18 +297,18 @@ static void terminationSignalHandler(int sig) {
         }
 
         NSColor *pillColor = isDark ? [NSColor colorWithCalibratedWhite:1.0 alpha:0.94] : [NSColor colorWithCalibratedWhite:0.06 alpha:0.94];
-        NSColor *nubColor = [pillColor colorWithAlphaComponent:0.55];
+        NSColor *trackColor = [pillColor colorWithAlphaComponent:0.20];
+        NSColor *borderColor = [pillColor colorWithAlphaComponent:0.45];
+        NSColor *nubColor = [pillColor colorWithAlphaComponent:0.50];
 
         CGFloat bodyX = 0.8;
         CGFloat bodyY = (totalH - bodyH) / 2.0;
         NSRect bodyRect = NSMakeRect(bodyX, bodyY, bodyW, bodyH);
 
-        // 1. Solid Battery Pill Body (Apple squarish curvature)
-        NSBezierPath *pillPath = [NSBezierPath bezierPathWithRoundedRect:bodyRect xRadius:radius yRadius:radius];
-        [pillColor set];
-        [pillPath fill];
+        CGFloat fillPct = MAX(0.0f, MIN(1.0f, (float)capacity / 100.0f));
+        CGFloat fillW = bodyW * fillPct;
 
-        // 2. Detached Terminal Nub (flat on left, convex arc on right)
+        // 1. Detached Terminal Nub (flat on left, convex arc on right)
         CGFloat nubX = NSMaxX(bodyRect) + nubGap;
         CGFloat nubY = bodyY + (bodyH - nubH) / 2.0;
 
@@ -326,11 +326,32 @@ static void terminationSignalHandler(int sig) {
         [nubColor set];
         [nubPath fill];
 
-        // 3. Stencil Cutout with DestinationOut (takes exact background wallpaper color)
-        CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
-        CGContextSaveGState(ctx);
-        CGContextSetBlendMode(ctx, kCGBlendModeDestinationOut);
+        // 2. Battery Container Path (squircle)
+        NSBezierPath *bodyPath = [NSBezierPath bezierPathWithRoundedRect:bodyRect xRadius:radius yRadius:radius];
 
+        // Draw translucent track background
+        [trackColor set];
+        [bodyPath fill];
+
+        // Stroke crisp border around container
+        CGFloat strokeW = 0.8;
+        NSRect strokeRect = NSInsetRect(bodyRect, strokeW / 2.0, strokeW / 2.0);
+        NSBezierPath *strokePath = [NSBezierPath bezierPathWithRoundedRect:strokeRect xRadius:radius - strokeW / 2.0 yRadius:radius - strokeW / 2.0];
+        [borderColor set];
+        strokePath.lineWidth = strokeW;
+        [strokePath stroke];
+
+        // 3. Dynamic Fill Bar clipped to bodyPath
+        if (fillW > 0.0) {
+            [NSGraphicsContext saveGraphicsState];
+            [bodyPath addClip];
+            NSRect fillRect = NSMakeRect(bodyX, bodyY, fillW, bodyH);
+            [pillColor set];
+            NSRectFill(fillRect);
+            [NSGraphicsContext restoreGraphicsState];
+        }
+
+        // 4. Text & Bolt Metrics
         CGFloat fontSize = (text.length >= 3) ? 8.8 : 9.4;
         CGFloat kern = (text.length >= 3) ? -0.38 : -0.20;
         CGFloat textOffset = (text.length >= 3) ? 0.25 : 0.20;
@@ -339,44 +360,69 @@ static void terminationSignalHandler(int sig) {
         NSFontDescriptor *desc = [baseFont.fontDescriptor fontDescriptorWithDesign:NSFontDescriptorSystemDesignRounded];
         NSFont *font = [NSFont fontWithDescriptor:desc size:fontSize] ?: baseFont;
 
-        NSDictionary *attrs = @{
-            NSFontAttributeName: font,
-            NSForegroundColorAttributeName: [NSColor blackColor],
-            NSKernAttributeName: @(kern)
-        };
-        NSAttributedString *aStr = [[NSAttributedString alloc] initWithString:text attributes:attrs];
-        NSSize textSize = [aStr size];
-
         CGFloat boltW = (text.length >= 3) ? 4.0 : 4.8;
         CGFloat boltH = (text.length >= 3) ? 7.2 : 8.0;
         CGFloat boltGap = (text.length >= 3) ? 0.8 : 1.0;
 
-        // Strictly center (numbers + bolt) as a unified unit inside the battery body
+        NSDictionary *attrsBase = @{
+            NSFontAttributeName: font,
+            NSKernAttributeName: @(kern)
+        };
+        NSAttributedString *aStrBase = [[NSAttributedString alloc] initWithString:text attributes:attrsBase];
+        NSSize textSize = [aStrBase size];
+
         CGFloat contentW = showBolt ? (textSize.width + boltGap + boltW) : textSize.width;
         CGFloat startContentX = bodyX + (bodyW - contentW) / 2.0;
         CGFloat textY = bodyY + (bodyH - textSize.height) / 2.0 + textOffset;
 
-        [aStr drawAtPoint:NSMakePoint(startContentX, textY)];
+        void (^drawContentBlock)(NSColor *, CGBlendMode) = ^(NSColor *color, CGBlendMode blendMode) {
+            CGContextRef ctx = [[NSGraphicsContext currentContext] CGContext];
+            CGContextSaveGState(ctx);
+            CGContextSetBlendMode(ctx, blendMode);
 
-        if (showBolt) {
-            CGFloat boltX = startContentX + textSize.width + boltGap;
-            CGFloat boltY = bodyY + (bodyH - boltH) / 2.0 + 0.10;
+            NSMutableDictionary *attrs = [attrsBase mutableCopy];
+            attrs[NSForegroundColorAttributeName] = color;
+            NSAttributedString *aStr = [[NSAttributedString alloc] initWithString:text attributes:attrs];
+            [aStr drawAtPoint:NSMakePoint(startContentX, textY)];
 
-            // Sharp pointy top and bottom tips with bold Retina body silhouette
-            NSBezierPath *boltPath = [NSBezierPath bezierPath];
-            [boltPath moveToPoint:NSMakePoint(boltX + boltW * 0.82, boltY + boltH)];
-            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.56, boltY + boltH * 0.56)];
-            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 1.00, boltY + boltH * 0.54)];
-            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.18, boltY)];
-            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.44, boltY + boltH * 0.44)];
-            [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.00, boltY + boltH * 0.46)];
-            [boltPath closePath];
+            if (showBolt) {
+                CGFloat boltX = startContentX + textSize.width + boltGap;
+                CGFloat boltY = bodyY + (bodyH - boltH) / 2.0 + 0.10;
 
-            [[NSColor blackColor] set];
-            [boltPath fill];
+                NSBezierPath *boltPath = [NSBezierPath bezierPath];
+                [boltPath moveToPoint:NSMakePoint(boltX + boltW * 0.82, boltY + boltH)];
+                [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.56, boltY + boltH * 0.56)];
+                [boltPath lineToPoint:NSMakePoint(boltX + boltW * 1.00, boltY + boltH * 0.54)];
+                [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.18, boltY)];
+                [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.44, boltY + boltH * 0.44)];
+                [boltPath lineToPoint:NSMakePoint(boltX + boltW * 0.00, boltY + boltH * 0.46)];
+                [boltPath closePath];
+
+                [color set];
+                [boltPath fill];
+            }
+            CGContextRestoreGState(ctx);
+        };
+
+        // A. Clipped to the filled portion: cutout (DestinationOut) to reveal wallpaper
+        if (fillW > 0.0) {
+            [NSGraphicsContext saveGraphicsState];
+            NSBezierPath *fillClip = [NSBezierPath bezierPathWithRect:NSMakeRect(bodyX, bodyY, fillW, bodyH)];
+            [fillClip addClip];
+            [bodyPath addClip];
+            drawContentBlock([NSColor blackColor], kCGBlendModeDestinationOut);
+            [NSGraphicsContext restoreGraphicsState];
         }
 
-        CGContextRestoreGState(ctx);
+        // B. Clipped to the unfilled track: draw in solid pillColor
+        if (fillW < bodyW) {
+            [NSGraphicsContext saveGraphicsState];
+            NSBezierPath *emptyClip = [NSBezierPath bezierPathWithRect:NSMakeRect(bodyX + fillW, bodyY, bodyW - fillW, bodyH)];
+            [emptyClip addClip];
+            [bodyPath addClip];
+            drawContentBlock(pillColor, kCGBlendModeNormal);
+            [NSGraphicsContext restoreGraphicsState];
+        }
         return YES;
     }];
 
@@ -415,17 +461,15 @@ static void terminationSignalHandler(int sig) {
     }
 
     // Exact User Rules:
-    // 1. When running on battery and mouse is away: stock percentage number, no bolt.
-    // 2. When plugged into charger and mouse is away: stock percentage number + tiny lightning bolt, centered together!
-    // 3. When hovering mouse over symbol: change to wattage followed by capital 'W' (e.g. "11W" or "67W") WITHOUT flash icon!
-    // 4. When mouse leaves: swiftly switch back to stock view.
-    // 5. When plugged into charger: show charging wattage for 2.0 seconds, then revert.
+    // 1. When running on battery (NOT connected to charger):
+    //    Always show stock percentage number. Hovering the mouse does NOT change it to wattage!
+    // 2. When plugged into charger:
+    //    - Normally show percentage number + tiny lightning bolt, centered together!
+    //    - When hovering mouse over symbol: change to wattage followed by capital 'W' (e.g. "67W") WITHOUT flash icon!
+    //    - When plugged into charger: show charging wattage for 2.0 seconds, then revert to percentage.
     NSString *displayText;
     BOOL showBolt = NO;
-    if (self.isHovered) {
-        displayText = [NSString stringWithFormat:@"%dW", watts];
-        showBolt = NO;
-    } else if (self.isConnected && self.isPlugInFlashActive) {
+    if (self.isConnected && (self.isHovered || self.isPlugInFlashActive)) {
         displayText = [NSString stringWithFormat:@"%dW", watts];
         showBolt = NO;
     } else {
