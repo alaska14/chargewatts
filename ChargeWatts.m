@@ -41,49 +41,54 @@ static void powerSourceChangedCallback(void *context) {
     });
 }
 
+#import <spawn.h>
+extern char **environ;
+
+// Restores Apple's stock battery icon. Uses only posix_spawn/waitpid so it is safe to call
+// from a signal handler (also on crashes), ensuring the menu bar is never left without a battery.
+static void restoreStockBatteryFromSignal(void) {
+    pid_t pid;
+    char *defaultsArgs[] = { "/usr/bin/defaults", "-currentHost", "write", "com.apple.controlcenter", "Battery", "-int", "2", NULL };
+    if (posix_spawn(&pid, defaultsArgs[0], NULL, NULL, defaultsArgs, environ) == 0) {
+        int status; waitpid(pid, &status, 0);
+    }
+    char *killArgs[] = { "/usr/bin/killall", "ControlCenter", NULL };
+    if (posix_spawn(&pid, killArgs[0], NULL, NULL, killArgs, environ) == 0) {
+        int status; waitpid(pid, &status, 0);
+    }
+}
+
+static volatile sig_atomic_t gRestoreOnSignal = 1;
+
 static void terminationSignalHandler(int sig) {
-    system("/usr/bin/defaults -currentHost write com.apple.controlcenter Battery -int 2 && /usr/bin/killall ControlCenter");
-    _exit(0);
+    if (gRestoreOnSignal) restoreStockBatteryFromSignal();
+    if (sig == SIGTERM || sig == SIGINT || sig == SIGHUP) _exit(0);
+    // Crash signals: re-raise with the default handler so a crash report is still generated.
+    signal(sig, SIG_DFL);
+    raise(sig);
 }
 
 @implementation AppDelegate
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
-    signal(SIGTERM, terminationSignalHandler);
-    signal(SIGINT, terminationSignalHandler);
-    signal(SIGHUP, terminationSignalHandler);
+    int sigs[] = { SIGTERM, SIGINT, SIGHUP, SIGSEGV, SIGBUS, SIGABRT, SIGILL, SIGFPE, SIGTRAP };
+    for (size_t i = 0; i < sizeof(sigs) / sizeof(sigs[0]); i++) {
+        signal(sigs[i], terminationSignalHandler);
+    }
+    gRestoreOnSignal = ![[NSUserDefaults standardUserDefaults] boolForKey:@"userDisabledStockBatteryHiding"];
 
     self.previousConnected = NO;
     self.isHovered = NO;
     self.isPlugInFlashActive = NO;
 
-    // 1. Ensure position 400 (exact slot between Bluetooth at 543 and Wi-Fi at 362) is registered
-    // in both app domain and Control Center BEFORE the status item is created.
-    NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
-    [defs registerDefaults:@{
-        @"NSStatusItem Preferred Position Battery": @(400),
-        @"NSStatusItem Preferred Position ChargeWatts": @(400)
-    }];
-    if (![defs objectForKey:@"NSStatusItem Preferred Position Battery"]) {
-        [defs setInteger:400 forKey:@"NSStatusItem Preferred Position Battery"];
-    }
-    if (![defs objectForKey:@"NSStatusItem Preferred Position ChargeWatts"]) {
-        [defs setInteger:400 forKey:@"NSStatusItem Preferred Position ChargeWatts"];
-    }
-    [defs synchronize];
-
-    // Seed com.apple.controlcenter domain so macOS menu bar manager locks slot 400
-    CFPreferencesSetValue(CFSTR("NSStatusItem Preferred Position Battery"),
-                          (__bridge CFNumberRef)@(400),
-                          CFSTR("com.apple.controlcenter"),
-                          kCFPreferencesCurrentUser,
-                          kCFPreferencesAnyHost);
-    CFPreferencesSetValue(CFSTR("NSStatusItem Preferred Position ChargeWatts"),
-                          (__bridge CFNumberRef)@(400),
-                          CFSTR("com.apple.controlcenter"),
-                          kCFPreferencesCurrentUser,
-                          kCFPreferencesAnyHost);
+    // Clean up status-item position keys that older builds wrote into Apple's
+    // com.apple.controlcenter domain (they had no effect there).
+    CFPreferencesSetValue(CFSTR("NSStatusItem Preferred Position ChargeWatts"), NULL,
+                          CFSTR("com.apple.controlcenter"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
     CFPreferencesSynchronize(CFSTR("com.apple.controlcenter"), kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+
+    // Initial slot between Bluetooth and Wi-Fi (stored in ChargeWatts' own defaults via autosaveName "Battery").
+    [[NSUserDefaults standardUserDefaults] registerDefaults:@{ @"NSStatusItem Preferred Position Battery": @(400) }];
 
     // Create Status Item with exact Apple Battery autosaveName & drag behavior
     self.statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:29.0];
@@ -119,14 +124,8 @@ static void terminationSignalHandler(int sig) {
                                                     userInfo:nil];
     [self.statusItem.button addTrackingArea:self.trackingArea];
 
-    // Dual-layer hover detection: Global & local event monitors ensure 100% responsive hover
-    // across all applications without polling or CPU overhead (event-driven).
-    if (!self.globalMouseMonitor) {
-        __weak typeof(self) weakSelf = self;
-        self.globalMouseMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskMouseMoved handler:^(NSEvent *event) {
-            [weakSelf checkHoverAtScreenPoint:[NSEvent mouseLocation]];
-        }];
-    }
+    // Hover is detected by the tracking area above (mouseEntered/mouseExited). We deliberately
+    // do NOT install a global mouse-moved monitor: it would wake the app on every mouse movement anywhere.
     if (!self.localMouseMonitor) {
         __weak typeof(self) weakSelf = self;
         self.localMouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved handler:^NSEvent *(NSEvent *event) {
@@ -438,10 +437,7 @@ static void terminationSignalHandler(int sig) {
     } else if (fabsf(self.liveWatts) >= 1.0f) {
         draw = fabsf(self.liveWatts);
     }
-    if (draw < 1.0f) {
-        draw = 9.6f;
-    }
-    return draw;
+    return draw; // 0 = no reliable reading available
 }
 
 - (void)updateIconOnly {
@@ -456,9 +452,7 @@ static void terminationSignalHandler(int sig) {
     } else if (watts <= 0 && fabsf(self.liveWatts) > 0.5f) {
         watts = (int)roundf(fabsf(self.liveWatts));
     }
-    if (watts <= 0) {
-        watts = self.isConnected ? 60 : 15;
-    }
+    // watts <= 0 means no reliable reading: never display a made-up number.
 
     // Exact User Rules:
     // 1. When running on battery (NOT connected to charger):
@@ -469,7 +463,7 @@ static void terminationSignalHandler(int sig) {
     //    - When plugged into charger: show charging wattage for 2.0 seconds, then revert to percentage.
     NSString *displayText;
     BOOL showBolt = NO;
-    if (self.isConnected && (self.isHovered || self.isPlugInFlashActive)) {
+    if (self.isConnected && watts > 0 && (self.isHovered || self.isPlugInFlashActive)) {
         displayText = [NSString stringWithFormat:@"%dW", watts];
         showBolt = NO;
     } else {
@@ -488,13 +482,19 @@ static void terminationSignalHandler(int sig) {
     if (self.isConnected) {
         if (self.capacity >= 100 || self.isFullyCharged) {
             float draw = [self currentActiveDrawWatts];
-            self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %.1fW Current draw (AC Pass-Through · %@)", self.capacity, draw, self.adapterName];
+            self.statusItem.button.toolTip = (draw > 0)
+                ? [NSString stringWithFormat:@"ChargeWatts: %d%% · %.1fW Current draw (AC Pass-Through · %@)", self.capacity, draw, self.adapterName]
+                : [NSString stringWithFormat:@"ChargeWatts: %d%% (AC Pass-Through · %@)", self.capacity, self.adapterName];
         } else {
-            self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %dW (%@)", self.capacity, watts, self.adapterName];
+            self.statusItem.button.toolTip = (watts > 0)
+                ? [NSString stringWithFormat:@"ChargeWatts: %d%% · %dW (%@)", self.capacity, watts, self.adapterName]
+                : [NSString stringWithFormat:@"ChargeWatts: %d%% (%@)", self.capacity, self.adapterName];
         }
     } else {
         float draw = [self currentActiveDrawWatts];
-        self.statusItem.button.toolTip = [NSString stringWithFormat:@"ChargeWatts: %d%% · %.1fW Current draw (Discharging)", self.capacity, draw];
+        self.statusItem.button.toolTip = (draw > 0)
+            ? [NSString stringWithFormat:@"ChargeWatts: %d%% · %.1fW Current draw (Discharging)", self.capacity, draw]
+            : [NSString stringWithFormat:@"ChargeWatts: %d%% (Discharging)", self.capacity];
     }
 }
 
@@ -552,8 +552,10 @@ static void terminationSignalHandler(int sig) {
     if (self.isConnected) {
         if (self.capacity >= 100 || (self.isFullyCharged && !self.isCharging)) {
             float draw = [self currentActiveDrawWatts];
-            // Exact User Specification: "Battery: 100% · 9.6W Current draw"
-            headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw];
+            // Format: "Battery: 100% · 9.6W Current draw" (wattage omitted if no reading)
+            headerTitle = (draw > 0)
+                ? [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw]
+                : [NSString stringWithFormat:@"Battery: %d%% · Connected", self.capacity];
             iconSymbol = @"powerplug.fill";
         } else {
             int w = self.adapterWatts > 0 ? self.adapterWatts : (int)roundf(self.liveWatts);
@@ -566,7 +568,9 @@ static void terminationSignalHandler(int sig) {
         }
     } else {
         float draw = [self currentActiveDrawWatts];
-        headerTitle = [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw];
+        headerTitle = (draw > 0)
+            ? [NSString stringWithFormat:@"Battery: %d%% · %.1fW Current draw", self.capacity, draw]
+            : [NSString stringWithFormat:@"Battery: %d%%", self.capacity];
         iconSymbol = @"battery.100";
     }
     NSMenuItem *headerItem = [[NSMenuItem alloc] initWithTitle:headerTitle action:nil keyEquivalent:@""];
@@ -653,8 +657,9 @@ static void terminationSignalHandler(int sig) {
 
 - (void)showAbout {
     NSAlert *about = [[NSAlert alloc] init];
-    about.messageText = @"ChargeWatts 1.2 by MonoLab";
-    about.informativeText = @"Stock-matching native battery icon with live wattage on plug-in & hover, adapter telemetry, and true hardware health.\n\nCrafted by MonoLab for 0.0% CPU overhead.";
+    NSString *version = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"";
+    about.messageText = [NSString stringWithFormat:@"ChargeWatts %@ by MonoLab", version];
+    about.informativeText = @"Stock-matching native battery icon with adapter wattage on plug-in & hover, live power draw, and true hardware health.\n\nCrafted by MonoLab. Event-driven, near-zero CPU.";
     [about addButtonWithTitle:@"OK"];
     [NSApp activateIgnoringOtherApps:YES];
     [about runModal];
@@ -746,6 +751,7 @@ static void terminationSignalHandler(int sig) {
     BOOL current = [self isStockBatteryHidden];
     BOOL newHidden = !current;
     [[NSUserDefaults standardUserDefaults] setBool:(!newHidden) forKey:@"userDisabledStockBatteryHiding"];
+    gRestoreOnSignal = newHidden;
     [[NSUserDefaults standardUserDefaults] synchronize];
     [self setStockBatteryHidden:newHidden];
 }

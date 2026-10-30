@@ -5,16 +5,16 @@
   <p><strong>1:1 pixel-perfect Apple battery replacement that shows live wattage on hover & plug-in.</strong></p>
 
   [![Support on Gumroad](https://img.shields.io/badge/Support_on_Gumroad-%242.99+-102039?style=for-the-badge&logo=gumroad&logoColor=white)](https://monolabapps.gumroad.com/l/chargewatts)
-  [![Free Release](https://img.shields.io/badge/Download-Free_DMG_(v1.2.0)-success?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/alaska14/chargewatts/releases/latest)
+  [![Free Release](https://img.shields.io/badge/Download-Free_DMG_(v1.2.4)-success?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/alaska14/chargewatts/releases/latest)
   [![AlternativeTo](https://img.shields.io/badge/AlternativeTo-Listed-blue?style=for-the-badge)](https://alternativeto.net/software/chargewatts/)
-  [![Homebrew](https://img.shields.io/badge/Homebrew-v1.2.0-orange?style=for-the-badge&logo=homebrew&logoColor=white)](#-installation)
+  [![Homebrew](https://img.shields.io/badge/Homebrew-v1.2.4-orange?style=for-the-badge&logo=homebrew&logoColor=white)](#-installation)
 </div>
 
 <br>
 
 macOS's default battery icon hides the most critical information: **How fast is your Mac actually charging?** Is your desk dock, power bank, or monitor trickle-charging at 15W, or fast-charging at 67W, 96W, or 140W?
 
-**ChargeWatts** is a 1:1 pixel-perfect drop-in replacement for the native macOS battery icon that reveals real-time charging speed with **0.0% CPU overhead**.
+**ChargeWatts** is a 1:1 pixel-perfect drop-in replacement for the native macOS battery icon that reveals your charger's wattage with near-zero CPU overhead.
 
 ---
 
@@ -24,11 +24,11 @@ macOS's default battery icon hides the most critical information: **How fast is 
 - 🔄 **Automatic Seamless Replacement:** Docks into the exact native battery position (slot 400, between Bluetooth and Wi-Fi) and automatically hides the duplicate Apple stock battery on first launch. Zero configuration or manual toggling required.
 - 🚀 **Automatic Autostart:** Automatically adds itself to macOS Login Items upon install so it's always ready when you start your Mac.
 - 🔙 **Effortless Uninstallation & Restoration:** If you ever quit or uninstall ChargeWatts (via the 1-click **Uninstall ChargeWatts...** right-click menu option or `brew uninstall`), your original Apple stock battery is immediately restored to its exact original slot.
-- 🖱️ **Live Mouse Hover Interaction:** Hover your mouse over the battery anytime to instantly reveal live hardware wattage (e.g. `67W` charging, or live system current draw e.g. `9.6W` at 100% / on battery), reverting smoothly to the battery percentage when you move away.
+- 🖱️ **Live Mouse Hover Interaction:** While plugged in, hover over the battery to reveal the charger's negotiated wattage (e.g. `67W`), or the live system draw when fully charged. On battery, the icon stays stock. If no reliable reading is available, ChargeWatts simply shows the percentage instead of guessing.
 - ⚡ **Plug-In Pulse:** Momentarily pulses your active charging wattage right inside the battery pill for 2.0s when connecting a charger.
 - 🔋 **Intelligent 100% Pass-Through Telemetry:** When fully charged on AC, clearly distinguishes charging from wall pass-through, displaying active live current draw.
 - 📊 **De-Cluttered Monochrome Menu:** Minimalist right-click menu showing live wattage/draw, true hardware battery health percentage, cycle count, and time estimates.
-- 🍃 **0.0% CPU Overhead:** Uses pure native IOKit kernel callbacks (`IOPSNotificationCreateRunLoopSource`). Zero polling loops.
+- 🍃 **Near-Zero CPU:** Event-driven IOKit callbacks (`IOPSNotificationCreateRunLoopSource`) on battery; a light 4-second refresh only while plugged in.
 
 ---
 
@@ -36,12 +36,15 @@ macOS's default battery icon hides the most critical information: **How fast is 
 
 ### Option 1: Homebrew (Recommended)
 ```bash
-brew tap alaska14/homebrew-tap
+brew tap alaska14/tap
+brew trust alaska14/tap   # Homebrew 7+ requires trusting third-party taps
 brew install --cask chargewatts
 ```
 
 ### Option 2: Download Free DMG
 Download the DMG from **[GitHub Releases](https://github.com/alaska14/chargewatts/releases/latest)**. Drag to Applications and launch. ChargeWatts takes care of the rest automatically!
+
+> **First launch:** MonoLab apps are not notarized by Apple yet. If macOS says the app can't be verified, right-click the app → **Open** (or System Settings → Privacy & Security → **Open Anyway**) once.
 
 ---
 
