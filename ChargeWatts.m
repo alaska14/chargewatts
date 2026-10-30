@@ -30,6 +30,7 @@ extern CFDictionaryRef IOPSCopyExternalPowerAdapterDetails(void);
 @property (strong, nonatomic) NSTimer *liveRefreshTimer;
 @property (strong, nonatomic) id globalMouseMonitor;
 @property (strong, nonatomic) id localMouseMonitor;
+@property (strong, nonatomic) NSTimer *hoverWatchTimer;
 
 - (void)updateTelemetryAndUI;
 @end
@@ -124,28 +125,55 @@ static void terminationSignalHandler(int sig) {
                                                     userInfo:nil];
     [self.statusItem.button addTrackingArea:self.trackingArea];
 
-    // Hover is detected by the tracking area above (mouseEntered/mouseExited). We deliberately
-    // do NOT install a global mouse-moved monitor: it would wake the app on every mouse movement anywhere.
-    if (!self.localMouseMonitor) {
-        __weak typeof(self) weakSelf = self;
-        self.localMouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved handler:^NSEvent *(NSEvent *event) {
-            [weakSelf checkHoverAtScreenPoint:[NSEvent mouseLocation]];
-            return event;
-        }];
-    }
+    // Hover starts via the tracking area (mouseEntered). While hovered, a short-lived watcher
+    // (global/local mouse monitors + a 0.15s timer fallback) detects when the cursor leaves,
+    // because status-bar tracking areas don't reliably deliver mouseExited. Nothing runs when
+    // the cursor is elsewhere.
+}
+
+- (NSRect)statusItemScreenRect {
+    NSButton *button = self.statusItem.button;
+    NSWindow *win = button.window;
+    if (!win) return NSZeroRect;
+    NSRect inWindow = [button convertRect:button.bounds toView:nil];
+    return [win convertRectToScreen:inWindow];
 }
 
 - (void)checkHoverAtScreenPoint:(NSPoint)mouseLoc {
-    NSWindow *win = self.statusItem.button.window;
-    if (!win) return;
-    NSRect screenRect = [win convertRectToScreen:self.statusItem.button.bounds];
-    // Generous vertical and horizontal hit margin for smooth, natural hover interaction
-    NSRect hitRect = NSInsetRect(screenRect, -2.0, -4.0);
+    NSRect hitRect = NSInsetRect([self statusItemScreenRect], -1.0, -2.0);
     BOOL inside = NSPointInRect(mouseLoc, hitRect);
     if (inside != self.isHovered) {
         self.isHovered = inside;
         [self updateIconOnly];
     }
+    if (!self.isHovered) [self stopHoverWatch];
+}
+
+- (void)startHoverWatch {
+    __weak typeof(self) weakSelf = self;
+    if (!self.globalMouseMonitor) {
+        self.globalMouseMonitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskMouseMoved handler:^(NSEvent *event) {
+            [weakSelf checkHoverAtScreenPoint:[NSEvent mouseLocation]];
+        }];
+    }
+    if (!self.localMouseMonitor) {
+        self.localMouseMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskMouseMoved handler:^NSEvent *(NSEvent *event) {
+            [weakSelf checkHoverAtScreenPoint:[NSEvent mouseLocation]];
+            return event;
+        }];
+    }
+    if (!self.hoverWatchTimer) {
+        self.hoverWatchTimer = [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer *t) {
+            [weakSelf checkHoverAtScreenPoint:[NSEvent mouseLocation]];
+        }];
+    }
+}
+
+- (void)stopHoverWatch {
+    if (self.globalMouseMonitor) { [NSEvent removeMonitor:self.globalMouseMonitor]; self.globalMouseMonitor = nil; }
+    if (self.localMouseMonitor) { [NSEvent removeMonitor:self.localMouseMonitor]; self.localMouseMonitor = nil; }
+    [self.hoverWatchTimer invalidate];
+    self.hoverWatchTimer = nil;
 }
 
 #pragma mark - Mouse Hover Handling
@@ -155,13 +183,11 @@ static void terminationSignalHandler(int sig) {
         self.isHovered = YES;
         [self updateIconOnly];
     }
+    [self startHoverWatch];
 }
 
 - (void)mouseExited:(NSEvent *)event {
-    if (self.isHovered) {
-        self.isHovered = NO;
-        [self updateIconOnly];
-    }
+    [self checkHoverAtScreenPoint:[NSEvent mouseLocation]];
 }
 
 #pragma mark - Power Telemetry
